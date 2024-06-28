@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 
-	"github.com/gorilla/mux"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/gorilla/mux"
 )
 
 type Pessoa struct {
-	Id   string `json:"id"`
+	ID   int    `json:"id"`
 	Nome string `json:"nome"`
 }
 
@@ -51,7 +52,7 @@ func getPessoas(w http.ResponseWriter, r *http.Request) {
 	var pessoas []Pessoa
 	for rows.Next() {
 		var p Pessoa
-		if err := rows.Scan(&p.Id, &p.Nome); err != nil {
+		if err := rows.Scan(&p.ID, &p.Nome); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -67,7 +68,7 @@ func getPessoaPorId(w http.ResponseWriter, r *http.Request) {
 	id := params["id"]
 
 	var p Pessoa
-	err := db.QueryRow("SELECT id, nome FROM pessoas WHERE id = ?", id).Scan(&p.Id, &p.Nome)
+	err := db.QueryRow("SELECT id, nome FROM pessoas WHERE id = ?", id).Scan(&p.ID, &p.Nome)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			http.NotFound(w, r)
@@ -83,6 +84,12 @@ func getPessoaPorId(w http.ResponseWriter, r *http.Request) {
 
 func criarPessoa(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	if r.Header.Get("Content-Type") != "application/json" {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+
 	var novaPessoa Pessoa
 	err := json.NewDecoder(r.Body).Decode(&novaPessoa)
 	if err != nil {
@@ -90,14 +97,19 @@ func criarPessoa(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var id int
-	err = db.QueryRow("INSERT INTO pessoas (nome) VALUES (?) RETURNING id", novaPessoa.Nome).Scan(&id)
+	res, err := db.Exec("INSERT INTO pessoas (nome) VALUES (?)", novaPessoa.Nome)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	novaPessoa.Id = fmt.Sprintf("%d", id)
+	id, err := res.LastInsertId()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	novaPessoa.ID = int(id)
 	json.NewEncoder(w).Encode(novaPessoa)
 }
 
@@ -112,6 +124,49 @@ func deletarPessoaPorId(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func atualizarPessoaPorId(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Header.Get("Content-Type") != "application/json" {
+		http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+		return
+	}
+
+	params := mux.Vars(r)
+	id, err := strconv.Atoi(params["id"])
+	if err != nil {
+		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		return
+	}
+
+	var pessoaAtualizada Pessoa
+	err = json.NewDecoder(r.Body).Decode(&pessoaAtualizada)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	res, err := db.Exec("UPDATE pessoas SET nome = ? WHERE id = ?", pessoaAtualizada.Nome, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if rowsAffected == 0 {
+		http.NotFound(w, r)
+		return
+	}
+
+	pessoaAtualizada.ID = id
+	json.NewEncoder(w).Encode(pessoaAtualizada)
 }
 
 func getRoot(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +184,7 @@ func main() {
 	r.HandleFunc("/pessoas", criarPessoa).Methods(http.MethodPost)
 	r.HandleFunc("/pessoas/{id}", getPessoaPorId).Methods(http.MethodGet)
 	r.HandleFunc("/pessoas/{id}", deletarPessoaPorId).Methods(http.MethodDelete)
+	r.HandleFunc("/pessoas/{id}", atualizarPessoaPorId).Methods(http.MethodPut)
 
 	fmt.Println("Servidor rodando na porta :3333")
 	err := http.ListenAndServe(":3333", r)
